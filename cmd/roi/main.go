@@ -49,12 +49,20 @@ func stringFromTime(t time.Time) string {
 	return t.Local().Format(time.RFC3339)
 }
 
-// stringFromDate는 시간을 rfc3339 형식의 문자열로 표현하되 T부터는 표시하지 않는다.
+// stringFromDate는 시간을 rfc3339 형식의 문자열로 표현하되 '연-월-일' 만 표시한다.
 func stringFromDate(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
 	return strings.Split(t.Local().Format(time.RFC3339), "T")[0]
+}
+
+// shortStringFromDate는 시간을 rfc3339 형식의 문자열로 표현하되 '월-일' 만 표시한다.
+func shortStringFromDate(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return strings.SplitN(strings.Split(t.Local().Format(time.RFC3339), "T")[0], "-", 2)[1]
 }
 
 // timeFromString는 rfc3339 형식의 문자열에서 시간을 얻는다.
@@ -84,10 +92,11 @@ func parseTimeForms(form url.Values, keys ...string) (map[string]time.Time, erro
 // parseTemplate은 tmpl 디렉토리 안의 html파일들을 파싱하여 http 응답에 사용될 수 있도록 한다.
 func parseTemplate() {
 	templates = template.Must(template.New("").Funcs(template.FuncMap{
-		"hasThumbnail":   hasThumbnail,
-		"stringFromTime": stringFromTime,
-		"stringFromDate": stringFromDate,
-		"join":           strings.Join,
+		"hasThumbnail":        hasThumbnail,
+		"stringFromTime":      stringFromTime,
+		"stringFromDate":      stringFromDate,
+		"shortStringFromDate": shortStringFromDate,
+		"join":                strings.Join,
 	}).ParseGlob("tmpl/*.html"))
 }
 
@@ -172,16 +181,16 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	numTasks := make(map[string]map[string]int)
+	numTasks := make(map[string]map[roi.TaskStatus]int)
 	for _, t := range tasks {
 		if numTasks[t.ProjectID] == nil {
-			numTasks[t.ProjectID] = make(map[string]int)
+			numTasks[t.ProjectID] = make(map[roi.TaskStatus]int)
 		}
-		numTasks[t.ProjectID][string(t.Status)] += 1
+		numTasks[t.ProjectID][t.Status] += 1
 	}
 	recipt := struct {
 		LoggedInUser string
-		NumTasks     map[string]map[string]int
+		NumTasks     map[string]map[roi.TaskStatus]int
 	}{
 		LoggedInUser: session["userid"],
 		NumTasks:     numTasks,
@@ -334,13 +343,13 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		r.ParseForm()
 		upd := roi.UpdateUserParam{
-			KorName:     r.Form.Get("kor-name"),
+			KorName:     r.Form.Get("kor_name"),
 			Name:        r.Form.Get("name"),
 			Team:        r.Form.Get("team"),
 			Role:        r.Form.Get("position"),
 			Email:       r.Form.Get("email"),
-			PhoneNumber: r.Form.Get("phone-number"),
-			EntryDate:   r.Form.Get("entry-date"),
+			PhoneNumber: r.Form.Get("phone_number"),
+			EntryDate:   r.Form.Get("entry_date"),
 		}
 		err = roi.UpdateUser(db, session["userid"], upd)
 		if err != nil {
@@ -379,12 +388,12 @@ func updatePasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.ParseForm()
-	oldpw := r.Form.Get("old-password")
+	oldpw := r.Form.Get("old_password")
 	if oldpw == "" {
 		http.Error(w, "old password field emtpy", http.StatusBadRequest)
 		return
 	}
-	newpw := r.Form.Get("new-password")
+	newpw := r.Form.Get("new_password")
 	if newpw == "" {
 		http.Error(w, "new password field emtpy", http.StatusBadRequest)
 		return
@@ -394,7 +403,7 @@ func updatePasswordHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 할일: password에 대한 컨펌은 프론트 엔드에서 하여야 함
-	newpwc := r.Form.Get("new-password-confirm")
+	newpwc := r.Form.Get("new_password_confirm")
 	if newpw != newpwc {
 		http.Error(w, "passwords are not matched", http.StatusBadRequest)
 		return
@@ -705,7 +714,8 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 	tagFilter := r.Form.Get("tag")
 	statusFilter := r.Form.Get("status")
 	assigneeFilter := r.Form.Get("assignee")
-	shots, err := roi.SearchShots(db, prj, shotFilter, tagFilter, statusFilter, assigneeFilter)
+	taskStatusFilter := r.Form.Get("task_status")
+	shots, err := roi.SearchShots(db, prj, shotFilter, tagFilter, statusFilter, assigneeFilter, taskStatusFilter)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -731,27 +741,31 @@ func searchHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	recipt := struct {
-		LoggedInUser   string
-		Projects       []string
-		Project        string
-		Shots          []*roi.Shot
-		AllShotStatus  []roi.ShotStatus
-		Tasks          map[string]map[string]*roi.Task
-		FilterShot     string
-		FilterTag      string
-		FilterStatus   string
-		FilterAssignee string
+		LoggedInUser     string
+		Projects         []string
+		Project          string
+		Shots            []*roi.Shot
+		AllShotStatus    []roi.ShotStatus
+		Tasks            map[string]map[string]*roi.Task
+		AllTaskStatus    []roi.TaskStatus
+		FilterShot       string
+		FilterTag        string
+		FilterStatus     string
+		FilterAssignee   string
+		FilterTaskStatus string
 	}{
-		LoggedInUser:   session["userid"],
-		Projects:       prjs,
-		Project:        prj,
-		Shots:          shots,
-		AllShotStatus:  roi.AllShotStatus,
-		Tasks:          tasks,
-		FilterShot:     shotFilter,
-		FilterTag:      tagFilter,
-		FilterStatus:   statusFilter,
-		FilterAssignee: assigneeFilter,
+		LoggedInUser:     session["userid"],
+		Projects:         prjs,
+		Project:          prj,
+		Shots:            shots,
+		AllShotStatus:    roi.AllShotStatus,
+		Tasks:            tasks,
+		AllTaskStatus:    roi.AllTaskStatus,
+		FilterShot:       shotFilter,
+		FilterTag:        tagFilter,
+		FilterStatus:     statusFilter,
+		FilterAssignee:   assigneeFilter,
+		FilterTaskStatus: taskStatusFilter,
 	}
 	err = executeTemplate(w, "search.html", recipt)
 	if err != nil {
@@ -1028,6 +1042,7 @@ func updateShotHandler(w http.ResponseWriter, r *http.Request) {
 				ProjectID: prj,
 				ShotID:    shot,
 				Name:      task,
+				DueDate:   time.Time{},
 			}
 			exist, err := roi.TaskExist(db, prj, shot, task)
 			if err != nil {
@@ -1148,9 +1163,14 @@ func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("task '%s' not exist", taskID), http.StatusBadRequest)
 			return
 		}
+		tforms, err := parseTimeForms(r.Form, "due_date")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
 		upd := roi.UpdateTaskParam{
 			Status:   roi.TaskStatus(r.Form.Get("status")),
 			Assignee: r.Form.Get("assignee"),
+			DueDate:  tforms["due_date"],
 		}
 		err = roi.UpdateTask(db, prj, shot, task, upd)
 		if err != nil {

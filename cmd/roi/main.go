@@ -250,17 +250,19 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 		numTasks[t.ProjectID][t.Status] += 1
 	}
 	recipt := struct {
-		LoggedInUser string
-		Timeline     []time.Time
-		NumTasks     map[string]map[roi.TaskStatus]int
-		TaskFromID   map[string]*roi.Task
-		TasksOfDay   map[time.Time][]string
+		LoggedInUser  string
+		Timeline      []time.Time
+		NumTasks      map[string]map[roi.TaskStatus]int
+		TaskFromID    map[string]*roi.Task
+		TasksOfDay    map[time.Time][]string
+		AllTaskStatus []roi.TaskStatus
 	}{
-		LoggedInUser: session["userid"],
-		Timeline:     timeline,
-		NumTasks:     numTasks,
-		TaskFromID:   taskFromID,
-		TasksOfDay:   tasksOfDay,
+		LoggedInUser:  session["userid"],
+		Timeline:      timeline,
+		NumTasks:      numTasks,
+		TaskFromID:    taskFromID,
+		TasksOfDay:    tasksOfDay,
+		AllTaskStatus: roi.AllTaskStatus,
 	}
 	err = executeTemplate(w, "index.html", recipt)
 	if err != nil {
@@ -1117,16 +1119,23 @@ func updateShotHandler(w http.ResponseWriter, r *http.Request) {
 				ProjectID: prj,
 				ShotID:    shot,
 				Name:      task,
+				Status:    roi.TaskNotSet,
 				DueDate:   time.Time{},
 			}
+			tid := prj + "." + shot + "." + task
 			exist, err := roi.TaskExist(db, prj, shot, task)
 			if err != nil {
-				log.Printf("could not check task '%s' exist: %v", prj+"."+shot+"."+task, err)
+				log.Printf("could not check task '%s' exist: %v", tid, err)
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
 			if !exist {
-				roi.AddTask(db, prj, shot, t)
+				err := roi.AddTask(db, prj, shot, t)
+				if err != nil {
+					log.Printf("could not add task '%s': %v", tid, err)
+					http.Error(w, "internal error", http.StatusInternalServerError)
+					return
+				}
 			}
 		}
 		http.Redirect(w, r, fmt.Sprintf("/shot/%s/%s", prj, shot), http.StatusSeeOther)
@@ -1253,6 +1262,39 @@ func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		// 수정 페이지로 돌아간다.
+		r.Method = "GET"
+		http.Redirect(w, r, r.RequestURI, http.StatusSeeOther)
+		return
+	}
+	t, err := roi.GetTask(db, prj, shot, task)
+	if err != nil {
+		log.Printf("could not get task '%s': %v", taskID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if t == nil {
+		http.Error(w, fmt.Sprintf("task '%s' not exist", taskID), http.StatusBadRequest)
+		return
+	}
+	vers := make([]int, t.LastOutputVersion)
+	for i := range vers {
+		vers[i] = t.LastOutputVersion - i
+	}
+	recipt := struct {
+		LoggedInUser  string
+		Task          *roi.Task
+		AllTaskStatus []roi.TaskStatus
+		Versions      []int // 역순
+	}{
+		LoggedInUser:  session["userid"],
+		Task:          t,
+		AllTaskStatus: roi.AllTaskStatus,
+		Versions:      vers,
+	}
+	err = executeTemplate(w, "update-task.html", recipt)
+	if err != nil {
+		log.Fatal(err)
 	}
 }
 
